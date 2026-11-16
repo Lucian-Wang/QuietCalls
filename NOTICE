@@ -1,0 +1,11 @@
+QuietCalls / 静话
+Copyright 2026 Lucian-Wang contributors
+
+Based on Pixel Telo:
+https://github.com/Pixel-Tailor-CN/PixelTelo
+Original authors: Pixel-Tailor-CN, Mystery00 and contributors.
+Licensed under the Apache License, Version 2.0; see LICENSE.
+
+Modified source files are identified by this fork's source snapshot and UPSTREAM.md.
+phone.dat attribution and license declarations: third_party/phone-NOTICE.md.
+Gradle Wrapper retains its original copyright and license notices.

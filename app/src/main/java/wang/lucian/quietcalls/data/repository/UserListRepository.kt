@@ -1,0 +1,244 @@
+// 静话修改版（Lucian-Wang）：在 Pixel Telo 基础上修改；参见 UPSTREAM.md。
+package wang.lucian.quietcalls.data.repository
+
+import android.content.SharedPreferences
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import wang.lucian.quietcalls.data.rules.CallRuleMatcher
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+import wang.lucian.quietcalls.data.PhoneNumberRuleMatcher
+import wang.lucian.quietcalls.data.dao.UserListDao
+import wang.lucian.quietcalls.data.entity.ListType
+import wang.lucian.quietcalls.data.entity.UserListEntry
+import wang.lucian.quietcalls.data.remote.PhoneLocationInfo
+
+/**
+ * 用户自定义黑白名单的数据仓库。
+ * 提供增删查接口，供 ViewModel 和拦截服务使用。
+ */
+class UserListRepository(private val dao: UserListDao) {
+    private val migrationMutex = Mutex()
+
+    /** 先可靠保存通行地域，再删除旧白名单地域；中断后重试不会丢失或扩大放行范围。 */
+    suspend fun migrateLegacyWhiteRegions(prefs: SharedPreferences) = migrationMutex.withLock {
+        withContext(Dispatchers.IO) {
+            val old = dao.getLocationRules(ListType.WHITE).filter { !it.tagMatch }
+            if (old.isNotEmpty()) {
+                val values = (CallRuleMatcher.entries(prefs.getString("rule_allowed_regions", "").orEmpty()) +
+                    old.map { it.phoneNumber }).distinct()
+                check(prefs.edit().putString("rule_allowed_regions", values.joinToString("\n")).commit())
+                old.forEach { dao.delete(it) }
+            }
+        }
+    }
+
+
+    /** 实时监听黑名单，供 UI 展示 */
+    fun observeBlackList(): Flow<List<UserListEntry>> = dao.observeByType(ListType.BLACK).map { entries -> entries.filter { !it.tagMatch } }
+
+    /** 实时监听白名单，供 UI 展示 */
+    fun observeWhiteList(): Flow<List<UserListEntry>> = dao.observeByType(ListType.WHITE).map { entries -> entries.filter { !it.tagMatch && !it.locationMatch } }
+
+    /**
+     * 查询来电号码是否命中黑名单（精确或前缀匹配）。
+     * 命中则返回匹配的条目，未命中返回 null。
+     */
+    suspend fun findBlackListMatch(phone: String): UserListEntry? =
+        findNumberMatch(phone, ListType.BLACK)
+
+    /**
+     * 查询来电号码是否命中白名单（精确或前缀匹配）。
+     * 命中则返回匹配的条目，未命中返回 null。
+     */
+    suspend fun findWhiteListMatch(phone: String): UserListEntry? =
+        findNumberMatch(phone, ListType.WHITE)
+
+    /** 按共享匹配器生成的有序候选查询名单规则。 */
+    private suspend fun findNumberMatch(phone: String, type: ListType): UserListEntry? {
+        return PhoneNumberRuleMatcher.matchCandidates(phone).firstNotNullOfOrNull { candidate ->
+            dao.findMatch(candidate, type)
+        }
+    }
+
+    /**
+     * 查询标签是否命中白名单。
+     * @param tag 来电标签（如"快递送餐"）
+     * @return 匹配的条目，未命中返回 null
+     */
+    suspend fun findWhiteListTagMatch(tag: String): UserListEntry? {
+        return null // 旧标签白名单不再参与放行。
+    }
+
+    /**
+     * 查询标签是否命中黑名单。
+     * 黑名单标签规则用于强制拦截某一类已识别标签的来电。
+     *
+     * @param tag 来电标签（如"营销推广电话"）
+     * @return 匹配的条目，未命中返回 null
+     */
+    suspend fun findBlackListTagMatch(tag: String): UserListEntry? {
+        return null // 自定义标签规则已退出黑白名单。
+    }
+
+    /** 精确规则优先，包含规则按关键词长度优先；同长度按 ID 保证结果稳定。 */
+    private suspend fun findTagMatch(tag: String, type: ListType): UserListEntry? {
+        if (tag.isBlank()) return null
+        return dao.getTagRules(type)
+            .asSequence()
+            .filter { rule ->
+                rule.phoneNumber.isNotBlank() && if (rule.tagContains) {
+                    tag.contains(rule.phoneNumber)
+                } else {
+                    tag == rule.phoneNumber
+                }
+            }
+            .sortedWith(
+                compareBy<UserListEntry> { it.tagContains }
+                    .thenByDescending { it.phoneNumber.length }
+                    .thenBy { it.id }
+            )
+            .firstOrNull()
+    }
+
+    suspend fun findWhiteListLocationMatch(locationInfo: PhoneLocationInfo?): UserListEntry? {
+        return findLocationMatch(locationInfo, ListType.WHITE)
+    }
+
+    suspend fun findBlackListLocationMatch(locationInfo: PhoneLocationInfo?): UserListEntry? {
+        return findLocationMatch(locationInfo, ListType.BLACK)
+    }
+
+    suspend fun replaceLocationRules(type: ListType, values: List<String>) {
+        require(type == ListType.BLACK || values.isEmpty())
+        require(values.size <= 200 && values.all { it.isNotBlank() })
+        dao.replaceLocationRules(type, values.distinct())
+    }
+
+    private suspend fun findLocationMatch(
+        locationInfo: PhoneLocationInfo?,
+        type: ListType
+    ): UserListEntry? {
+        val normalizedLocation = normalizeLocation(locationInfo)
+        if (normalizedLocation.isBlank()) return null
+        val rules = dao.getLocationRules(type)
+        return rules.firstOrNull { rule ->
+            val keyword = rule.phoneNumber.trim().lowercase()
+            !rule.tagMatch && keyword.isNotEmpty() && (
+                wang.lucian.quietcalls.data.rules.CallRuleMatcher.allowedRegion(
+                    locationInfo!!.province, locationInfo.city, rule.phoneNumber) ||
+                (!keyword.contains('/') && normalizedLocation.contains(keyword)))
+        }
+    }
+
+    private fun normalizeLocation(locationInfo: PhoneLocationInfo?): String {
+        if (locationInfo == null) return ""
+        return listOf(
+            locationInfo.province,
+            locationInfo.city,
+            "${locationInfo.province}${locationInfo.city}",
+            "${locationInfo.province} ${locationInfo.city}"
+        )
+            .joinToString(" ")
+            .lowercase()
+    }
+
+    /**
+     * 添加条目到指定名单。
+     * 输入无效或唯一键已存在时返回 false，成功插入返回 true。
+     */
+    suspend fun add(
+        phoneNumber: String,
+        isPrefix: Boolean,
+        listType: ListType,
+        remark: String?,
+        tagMatch: Boolean = false,
+        locationMatch: Boolean = false,
+        forceBlock: Boolean = false,
+        tagContains: Boolean = false,
+    ): Boolean {
+        val entry = buildEntry(
+            existing = null,
+            tagContains = tagContains,
+            phoneNumber = phoneNumber,
+            isPrefix = isPrefix,
+            listType = listType,
+            remark = remark,
+            tagMatch = tagMatch,
+            locationMatch = locationMatch,
+            forceBlock = forceBlock,
+        ) ?: return false
+        return dao.insert(entry) != -1L
+    }
+
+    /**
+     * 原位更新规则。输入无效或唯一键冲突时返回 false，旧规则保持不变。
+     */
+    suspend fun update(
+        existing: UserListEntry,
+        phoneNumber: String,
+        isPrefix: Boolean,
+        remark: String?,
+        tagMatch: Boolean = false,
+        locationMatch: Boolean = false,
+        forceBlock: Boolean = false,
+        tagContains: Boolean = false,
+    ): Boolean {
+        val entry = buildEntry(
+            existing = existing,
+            tagContains = tagContains,
+            phoneNumber = phoneNumber,
+            isPrefix = isPrefix,
+            listType = existing.listType,
+            remark = remark,
+            tagMatch = tagMatch,
+            locationMatch = locationMatch,
+            forceBlock = forceBlock,
+        ) ?: return false
+        return dao.update(entry) > 0
+    }
+
+    private fun buildEntry(
+        existing: UserListEntry?,
+        phoneNumber: String,
+        isPrefix: Boolean,
+        listType: ListType,
+        remark: String?,
+        tagMatch: Boolean,
+        locationMatch: Boolean,
+        forceBlock: Boolean,
+        tagContains: Boolean,
+    ): UserListEntry? {
+        if (tagMatch || (listType == ListType.WHITE && locationMatch)) return null
+        // 保护首页快捷添加等非表单入口，不能只依赖 ViewModel 校验。
+        if (!tagMatch && !locationMatch && !PhoneNumberRuleMatcher.isValidRule(phoneNumber)) {
+            return null
+        }
+        val normalizedValue = if (tagMatch || locationMatch) {
+            phoneNumber.trim()
+        } else {
+            PhoneNumberRuleMatcher.normalizeRuleForStorage(phoneNumber)
+        }
+        if (normalizedValue.isBlank()) return null
+        return UserListEntry(
+            id = existing?.id ?: 0,
+            phoneNumber = normalizedValue,
+            isPrefix = isPrefix && !tagMatch && !locationMatch,
+            listType = listType,
+            remark = remark?.trim()?.takeIf { it.isNotBlank() },
+            addedAt = existing?.addedAt ?: System.currentTimeMillis(),
+            tagMatch = tagMatch,
+            tagContains = tagMatch && !locationMatch && tagContains,
+            locationMatch = locationMatch,
+            forceBlock = forceBlock && listType == ListType.BLACK,
+        )
+    }
+
+    /** 删除指定条目 */
+    suspend fun delete(entry: UserListEntry) = dao.delete(entry)
+
+    /** 获取指定类型全部条目，供备份用 */
+    suspend fun getAllByType(type: ListType): List<UserListEntry> = dao.getAllByType(type)
+}

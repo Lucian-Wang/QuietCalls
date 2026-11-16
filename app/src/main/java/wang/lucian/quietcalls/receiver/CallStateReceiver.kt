@@ -1,0 +1,70 @@
+package wang.lucian.quietcalls.receiver
+
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.SharedPreferences
+import android.telephony.TelephonyManager
+import android.telephony.SubscriptionManager
+import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import org.koin.core.component.KoinComponent
+import org.koin.core.component.inject
+import wang.lucian.quietcalls.data.entity.FeedbackStatus
+import wang.lucian.quietcalls.data.repository.BlockedCallRepository
+import wang.lucian.quietcalls.service.IncomingCallOverlay
+
+/**
+ * 监听通话状态变化。
+ * 通话结束（回到 IDLE）时先移除来电归属地悬浮窗，再处理查询结果反馈提醒。
+ * 来电筛查阶段写入的“待反馈提醒”标记，在通话结束（回到 IDLE）时兑现为反馈询问通知。
+ * 需要 READ_PHONE_STATE 权限；未授权时收不到广播，功能自动失效，不影响拦截链路。
+ */
+class CallStateReceiver : BroadcastReceiver(), KoinComponent {
+    companion object {
+        private const val TAG = "CallStateReceiver"
+    }
+
+    private val prefs: SharedPreferences by inject()
+    private val blockedCallRepository: BlockedCallRepository by inject()
+    private val incomingCallOverlay: IncomingCallOverlay by inject()
+    private val callStateVibrationController: CallStateVibrationController by inject()
+
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action != TelephonyManager.ACTION_PHONE_STATE_CHANGED) return
+        val state = intent.getStringExtra(TelephonyManager.EXTRA_STATE)
+        val subscriptionId = intent.getIntExtra(
+            SubscriptionManager.EXTRA_SUBSCRIPTION_INDEX,
+            SubscriptionManager.INVALID_SUBSCRIPTION_ID
+        )
+        runCatching {
+            callStateVibrationController.onPhoneStateChanged(state, subscriptionId)
+        }.onFailure {
+            Log.w(TAG, "Failed to handle call state vibration", it)
+        }
+        if (state != TelephonyManager.EXTRA_STATE_IDLE) return
+
+        incomingCallOverlay.hide()
+
+        // 读取即清除标记，重复到达的 IDLE 广播不会二次提醒
+        val recordId = QueryFeedbackNotifier.consumePendingFeedback(context, prefs) ?: return
+
+        val pendingResult = goAsync()
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            try {
+                val call = blockedCallRepository.findById(recordId)
+                if (call != null && call.feedbackStatus == FeedbackStatus.PENDING) {
+                    QueryFeedbackNotifier.showFeedbackPrompt(context, call)
+                    Log.i(TAG, "Feedback prompt shown: recordId=$recordId")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to show feedback prompt", e)
+            } finally {
+                pendingResult.finish()
+            }
+        }
+    }
+}

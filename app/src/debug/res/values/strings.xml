@@ -1,0 +1,4 @@
+<!-- 静话修改版（Lucian-Wang）：在 Pixel Telo 基础上修改；参见 UPSTREAM.md。 -->
+<resources>
+    <string name="app_name">静话（测试版）</string>
+</resources>

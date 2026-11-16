@@ -1,0 +1,227 @@
+package wang.lucian.quietcalls.ui.components
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.unit.dp
+import wang.lucian.quietcalls.R
+import wang.lucian.quietcalls.viewmodel.LOCAL_LABEL_MAX_LENGTH
+import wang.lucian.quietcalls.viewmodel.LocalLabelEditorError
+import wang.lucian.quietcalls.viewmodel.LocalLabelEditorState
+
+/**
+ * 共用的本地标签编辑与删除确认 Dialog。
+ *
+ * 只消费稳定 UI 状态和事件，不直接访问 Repository。
+ */
+@Composable
+fun LocalNumberLabelEditorDialogs(
+    state: LocalLabelEditorState,
+    onDraftChange: (String) -> Unit,
+    onSave: () -> Unit,
+    onDismissEditor: () -> Unit,
+    onRequestDelete: () -> Unit,
+    onConfirmDelete: () -> Unit,
+    onDismissDelete: () -> Unit,
+) {
+    if (state.editorVisible) {
+        LocalNumberLabelEditDialog(
+            state = state,
+            onDraftChange = onDraftChange,
+            onSave = onSave,
+            onRequestDelete = onRequestDelete,
+            onDismiss = onDismissEditor,
+        )
+    }
+    if (state.deleteConfirmationVisible) {
+        LocalNumberLabelDeleteDialog(
+            state = state,
+            onConfirm = onConfirmDelete,
+            onDismiss = onDismissDelete,
+        )
+    }
+}
+
+@Composable
+private fun LocalNumberLabelEditDialog(
+    state: LocalLabelEditorState,
+    onDraftChange: (String) -> Unit,
+    onSave: () -> Unit,
+    onRequestDelete: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val tooLong = state.draft.length > LOCAL_LABEL_MAX_LENGTH
+    val errorText = when {
+        tooLong || state.error == LocalLabelEditorError.LABEL_TOO_LONG ->
+            stringResource(R.string.error_local_label_too_long)
+
+        state.error == LocalLabelEditorError.INVALID_NUMBER ->
+            stringResource(R.string.error_local_label_invalid_number)
+
+        state.error == LocalLabelEditorError.SAVE_FAILED ->
+            stringResource(R.string.error_local_label_save_failed)
+
+        else -> null
+    }
+    val canSave = !state.saving &&
+        !tooLong &&
+        !state.phoneNumber.isNullOrBlank()
+    val charCountDescription = stringResource(
+        R.string.cd_local_label_char_count,
+        state.draft.length,
+    )
+
+    AlertDialog(
+        onDismissRequest = {
+            if (!state.saving) onDismiss()
+        },
+        title = {
+            Text(
+                stringResource(
+                    if (state.currentLabel.isNullOrBlank()) {
+                        R.string.title_set_local_label
+                    } else {
+                        R.string.title_edit_local_label
+                    },
+                ),
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = state.phoneNumber.orEmpty(),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = state.draft,
+                    onValueChange = onDraftChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !state.saving,
+                    singleLine = true,
+                    isError = errorText != null,
+                    label = { Text(stringResource(R.string.title_local_number_label)) },
+                    supportingText = {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(errorText.orEmpty())
+                            Text(
+                                text = stringResource(
+                                    R.string.label_local_label_char_count,
+                                    state.draft.length,
+                                ),
+                                modifier = Modifier.semantics {
+                                    contentDescription = charCountDescription
+                                },
+                            )
+                        }
+                    },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(
+                        onDone = {
+                            if (canSave) onSave()
+                        },
+                    ),
+                )
+                if (!state.currentLabel.isNullOrBlank()) {
+                    TextButton(
+                        onClick = onRequestDelete,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp),
+                        enabled = !state.saving,
+                        colors = ButtonDefaults.textButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error,
+                        ),
+                    ) {
+                        Text(stringResource(R.string.cd_delete_local_label))
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onSave,
+                enabled = canSave,
+            ) {
+                Text(stringResource(R.string.action_save))
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                enabled = !state.saving,
+            ) {
+                Text(stringResource(R.string.action_cancel))
+            }
+        },
+    )
+}
+
+@Composable
+private fun LocalNumberLabelDeleteDialog(
+    state: LocalLabelEditorState,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val errorText = when (state.error) {
+        LocalLabelEditorError.INVALID_NUMBER ->
+            stringResource(R.string.error_local_label_invalid_number)
+
+        LocalLabelEditorError.SAVE_FAILED ->
+            stringResource(R.string.error_local_label_save_failed)
+
+        else -> null
+    }
+    AlertDialog(
+        onDismissRequest = {
+            if (!state.saving) onDismiss()
+        },
+        title = { Text(stringResource(R.string.title_delete_local_label)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(stringResource(R.string.msg_delete_local_label_confirm))
+                if (errorText != null) {
+                    Text(
+                        text = errorText,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onConfirm,
+                enabled = !state.saving && !state.phoneNumber.isNullOrBlank(),
+            ) {
+                Text(stringResource(R.string.action_delete))
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                enabled = !state.saving,
+            ) {
+                Text(stringResource(R.string.action_cancel))
+            }
+        },
+    )
+}

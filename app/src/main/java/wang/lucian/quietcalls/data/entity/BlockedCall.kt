@@ -1,0 +1,105 @@
+package wang.lucian.quietcalls.data.entity
+
+import androidx.room.Entity
+import androidx.room.PrimaryKey
+
+/**
+ * 骚扰拦截记录实体
+ */
+@Entity(tableName = "blocked_calls")
+data class BlockedCall(
+    @PrimaryKey(autoGenerate = true)
+    val id: Long = 0,
+    val phoneNumber: String,
+    val blockTime: Long,
+    val remark: String?,
+    val resultType: ResultType = ResultType.INTERCEPT,
+    val localDuration: Long = 0,
+    val networkDuration: Long = 0,
+    /** 来电标签（如"快递送餐"），来自本地/网络查询 */
+    val label: String? = null,
+    /** 联网查询返回的省份；旧记录或无数据时为 null */
+    val province: String? = null,
+    /** 联网查询返回的城市；旧记录或无数据时为 null */
+    val city: String? = null,
+    /** 联网查询最终命中的服务端 source，纯本地结果为 null */
+    val querySource: String? = null,
+    /** 联网结果所属的稳定 Backend ID；纯本地结果或无法判定的旧记录为 null */
+    val queryBackendId: String? = null,
+    /** 服务端签发的一次性反馈 token，不写入备份与日志 */
+    val feedbackToken: String? = null,
+    /** 本地反馈状态 */
+    val feedbackStatus: FeedbackStatus = FeedbackStatus.UNAVAILABLE,
+    /** 与反馈凭据同次查询取得的原号码，不参与备份。 */
+    val feedbackPhone: String? = null,
+    val feedbackTokenExpiresAt: Long? = null,
+    @androidx.room.ColumnInfo(defaultValue = "'unknown'")
+    val reportTokenState: String = "unknown",
+    /** 仅用于展示来电发生时的社区结论，不能用于新来电决策。 */
+    @androidx.room.ColumnInfo(defaultValue = "'unknown'")
+    val communityStatus: String = "unknown",
+    @androidx.room.ColumnInfo(defaultValue = "0")
+    val communityBlockApplied: Boolean = false,
+)
+
+/**
+ * 查询结果反馈状态
+ */
+enum class FeedbackStatus {
+    /** 没有可用 token，不能反馈 */
+    UNAVAILABLE,
+
+    /** 持有有效 token，可提交反馈 */
+    PENDING,
+
+    /** 已提交“结果准确” */
+    POSITIVE,
+
+    /** 已提交“结果不准确” */
+    NEGATIVE,
+
+    /** 服务端返回 token 已消费，原反馈方向未知 */
+    ALREADY_SUBMITTED,
+
+    /** token 已过期 */
+    EXPIRED,
+
+    /** token 无效 */
+    INVALID,
+}
+
+enum class ResultType {
+    INTERCEPT, // 拦截
+    PASS_BUT_NOTIFY, // 提示但不拦截 (暂未实现完全逻辑，可用于白名单或低风险)
+    NETWORK_TIMEOUT, // 联网查询超时
+    NETWORK_RATE_LIMITED, // 远端接口限流
+    NETWORK_SERVER_ERROR, // 服务端内部或未分类异常
+    NETWORK_INVALID_REQUEST, // 查询参数无效
+    NETWORK_AUTH_ERROR, // 查询服务拒绝认证或授权
+    NETWORK_INVALID_RESPONSE, // 查询响应格式不兼容
+    NETWORK_UPSTREAM_TIMEOUT, // 服务端访问上游超时
+    NETWORK_UPSTREAM_UNAVAILABLE, // 上游数据源暂不可用
+    NETWORK_FEEDBACK_ERROR, // 查询结果反馈凭据签发失败
+    NETWORK_CONNECTION_ERROR, // 网络连接失败
+    QUERY_SERVICE_UNAVAILABLE, // 查询服务未就绪
+    PASS, // 正常放行并通过设置强制记录
+    BLACK_LIST, // 用户黑名单拦截
+    WHITE_LIST, // 用户白名单放行
+}
+
+/** 是否属于联网查询失败；这些结果必须 Fail Open，并允许用户手动重试。 */
+fun ResultType.isNetworkFailure(): Boolean = when (this) {
+    ResultType.NETWORK_TIMEOUT,
+    ResultType.NETWORK_RATE_LIMITED,
+    ResultType.NETWORK_SERVER_ERROR,
+    ResultType.NETWORK_INVALID_REQUEST,
+    ResultType.NETWORK_AUTH_ERROR,
+    ResultType.NETWORK_INVALID_RESPONSE,
+    ResultType.NETWORK_UPSTREAM_TIMEOUT,
+    ResultType.NETWORK_UPSTREAM_UNAVAILABLE,
+    ResultType.NETWORK_FEEDBACK_ERROR,
+    ResultType.NETWORK_CONNECTION_ERROR,
+    ResultType.QUERY_SERVICE_UNAVAILABLE -> true
+
+    else -> false
+}

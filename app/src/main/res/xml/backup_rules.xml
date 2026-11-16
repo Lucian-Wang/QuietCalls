@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 静话修改版（Lucian-Wang）：在 Pixel Telo 基础上修改；参见 UPSTREAM.md。 -->
+<!-- Android 11 及更早版本的系统备份：运行时记录通过 App 手动备份迁移。 -->
+<full-backup-content>
+    <exclude domain="sharedpref" path="self_hosted_credentials.xml" />
+        <exclude domain="sharedpref" path="quiet_blocked_notifications.xml" />
+    <exclude domain="database" path="app-database" />
+    <exclude domain="database" path="app-database-wal" />
+    <exclude domain="database" path="app-database-shm" />
+    <exclude domain="database" path="app-database-journal" />
+</full-backup-content>

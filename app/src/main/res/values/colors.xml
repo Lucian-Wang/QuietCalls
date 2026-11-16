@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 静话修改版（Lucian-Wang）：在 Pixel Telo 基础上修改；参见 UPSTREAM.md。 -->
+<resources>
+    <!-- 启动页背景色：日间沿用图标背景，夜间由 values-night 覆盖 -->
+    <color name="splash_background">#FFF8E1</color>
+</resources>

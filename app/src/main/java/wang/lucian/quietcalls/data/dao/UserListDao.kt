@@ -1,0 +1,79 @@
+// 静话修改版（Lucian-Wang）：在 Pixel Telo 基础上修改；参见 UPSTREAM.md。
+package wang.lucian.quietcalls.data.dao
+
+import androidx.room.Transaction
+import androidx.room.Dao
+import androidx.room.Delete
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
+import androidx.room.Query
+import androidx.room.Update
+import kotlinx.coroutines.flow.Flow
+import wang.lucian.quietcalls.data.entity.ListType
+import wang.lucian.quietcalls.data.entity.UserListEntry
+
+@Dao
+interface UserListDao {
+    /** 多选地域一次提交，失败时不留下半份名单，号码条目保持不变。 */
+    @Transaction
+    suspend fun replaceLocationRules(type: ListType, values: List<String>) {
+        val old = getLocationRules(type).filter { !it.tagMatch }
+        old.filter { it.phoneNumber !in values }.forEach { delete(it) }
+        val present = old.map { it.phoneNumber }.toSet()
+        values.filter { it !in present }.forEach { value ->
+            check(insert(UserListEntry(phoneNumber = value, isPrefix = false, listType = type,
+                remark = null, locationMatch = true)) != -1L)
+        }
+    }
+
+    /** 实时监听指定类型的名单，供 UI 展示 */
+    @Query("SELECT * FROM user_list WHERE listType = :type ORDER BY addedAt DESC")
+    fun observeByType(type: ListType): Flow<List<UserListEntry>>
+
+    /** 获取指定类型的全部条目，供备份用 */
+    @Query("SELECT * FROM user_list WHERE listType = :type")
+    suspend fun getAllByType(type: ListType): List<UserListEntry>
+
+    /** 插入，若 (phoneNumber, listType) 已存在则忽略 */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insert(entry: UserListEntry): Long
+
+    @Delete
+    suspend fun delete(entry: UserListEntry)
+
+    /** 原位更新规则；唯一键冲突时保留旧规则并返回 0。 */
+    @Update(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun update(entry: UserListEntry): Int
+
+    /** 查询是否存在匹配的条目（精确或前缀），用于拦截判断。
+     *  前缀匹配使用 SUBSTR 而非 LIKE，避免 phoneNumber 中含有 '%'/'_' 等 LIKE 通配符时产生语义错误。
+     *  tagMatch=0 时按号码匹配，tagMatch=1 时忽略（标签匹配由 Repository 层处理）。
+     *  旧数据或备份中的空/非法号码不参与匹配，尤其不能将空前缀当作全匹配。
+     */
+    @Query("""
+        SELECT * FROM user_list
+        WHERE listType = :type
+        AND tagMatch = 0
+        AND locationMatch = 0
+        AND LENGTH(phoneNumber) > 0
+        AND (
+            phoneNumber NOT GLOB '*[^0-9]*' OR
+            (SUBSTR(phoneNumber, 1, 1) = '+' AND LENGTH(phoneNumber) > 1
+                AND SUBSTR(phoneNumber, 2) NOT GLOB '*[^0-9]*')
+        )
+        AND (
+            (isPrefix = 0 AND phoneNumber = :phone) OR
+            (isPrefix = 1 AND SUBSTR(:phone, 1, LENGTH(phoneNumber)) = phoneNumber)
+        )
+        LIMIT 1
+    """)
+    suspend fun findMatch(phone: String, type: ListType): UserListEntry?
+
+    /** 查询指定类型的所有标签匹配规则 */
+    @Query("SELECT * FROM user_list WHERE listType = :type AND tagMatch = 1 AND locationMatch = 0")
+    suspend fun getTagRules(type: ListType): List<UserListEntry>
+
+    /** 查询指定类型的所有归属地匹配规则 */
+    @Query("SELECT * FROM user_list WHERE listType = :type AND locationMatch = 1")
+    suspend fun getLocationRules(type: ListType): List<UserListEntry>
+}
